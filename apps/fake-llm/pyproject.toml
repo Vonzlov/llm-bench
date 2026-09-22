@@ -1,0 +1,18 @@
+[project]
+name = "fake-llm"
+version = "0.1.0"
+description = "Фейковая OpenAI-совместимая модель: эталон для проверки стенда"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+fake-llm = "fake_llm.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

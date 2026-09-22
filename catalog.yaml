@@ -1,0 +1,34 @@
+# Каталог управляемых моделей: их планировщик сам поднимает в кластере.
+# Черновик этапа 0 — окончательно фиксируется после проверки GPU и дальше не меняется.
+#
+# Правила:
+# - все модели из одного семейства, чтобы сравнивать движки на одних и тех же весах;
+# - в Ollama — GGUF с тегом по умолчанию (Q4_K_M), в vLLM — 16-битные веса или AWQ;
+# - с Hugging Face берём только safetensors и без trust_remote_code;
+# - модель крупнее добавляется новой записью, код при этом не меняется.
+
+models:
+  - key: qwen2.5-0.5b
+    class: small
+    ollama:
+      model: qwen2.5:0.5b
+    vllm:
+      model: Qwen/Qwen2.5-0.5B-Instruct
+    license: apache-2.0
+
+  - key: qwen2.5-1.5b
+    class: medium
+    ollama:
+      model: qwen2.5:1.5b
+    vllm:
+      model: Qwen/Qwen2.5-1.5B-Instruct
+    license: apache-2.0
+
+  - key: qwen2.5-3b
+    class: large
+    ollama:
+      model: qwen2.5:3b
+    vllm:
+      model: Qwen/Qwen2.5-3B-Instruct-AWQ
+      quantization: awq
+    license: qwen-research

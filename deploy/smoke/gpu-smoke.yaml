@@ -1,0 +1,23 @@
+# Проверка, что под видит GPU и может на ней считать.
+#   kubectl apply -f deploy/smoke/gpu-smoke.yaml
+#   kubectl logs -f pod/gpu-smoke      # в конце должно быть «Test PASSED»
+#   kubectl delete -f deploy/smoke/gpu-smoke.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-smoke
+  labels:
+    app.kubernetes.io/part-of: llm-bench
+spec:
+  restartPolicy: Never
+  # k3s регистрирует рантайм NVIDIA как RuntimeClass, но не делает его рантаймом по умолчанию.
+  runtimeClassName: nvidia
+  nodeSelector:
+    gpu: "true"
+  containers:
+    - name: vectoradd
+      # Пример NVIDIA: складывает два вектора на GPU и сверяет результат.
+      image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0
+      resources:
+        limits:
+          nvidia.com/gpu: 1
