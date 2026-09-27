@@ -1,7 +1,10 @@
-# Проверка, что под видит GPU и может на ней считать.
+# Проверка, что под в кластере видит видеокарту.
 #   kubectl apply -f deploy/smoke/gpu-smoke.yaml
-#   kubectl logs -f pod/gpu-smoke      # в конце должно быть «Test PASSED»
+#   kubectl logs -f pod/gpu-smoke      # в логах — таблица nvidia-smi с вашей картой
 #   kubectl delete -f deploy/smoke/gpu-smoke.yaml
+#
+# Образ обычный: nvidia-smi и библиотеки драйвера прокидывает в контейнер рантайм nvidia,
+# это и проверяем. Пример NVIDIA из nvcr.io не используем: из России реестр отвечает 403.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -15,9 +18,12 @@ spec:
   nodeSelector:
     gpu: "true"
   containers:
-    - name: vectoradd
-      # Пример NVIDIA: складывает два вектора на GPU и сверяет результат.
-      image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0
-      resources:
-        limits:
-          nvidia.com/gpu: 1
+    - name: smoke
+      image: ubuntu:24.04
+      command: ["nvidia-smi"]
+      # Без device plugin карту выдаёт не планировщик, а сам рантайм — по этим переменным.
+      env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility

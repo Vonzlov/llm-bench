@@ -1,0 +1,6 @@
+# Репозиторий NVIDIA Container Toolkit. Копируется в /etc/apt/sources.list.d/.
+# Формат deb822: каждое поле на своей строке, поэтому файл не ломается при копировании.
+Types: deb
+URIs: https://nvidia.github.io/libnvidia-container/stable/deb/amd64
+Suites: /
+Signed-By: /usr/share/keyrings/nvidia.gpg

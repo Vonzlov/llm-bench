@@ -1,0 +1,5 @@
+# Копируется в /etc/rancher/k3s/config.yaml до установки k3s.
+# kubectl из k3s всегда читает /etc/rancher/k3s/k3s.yaml, а по умолчанию этот файл
+# доступен только root. На личной машине с одним пользователем проще открыть его
+# на чтение всем; на общей машине вместо этого нужен write-kubeconfig-group.
+write-kubeconfig-mode: "0644"

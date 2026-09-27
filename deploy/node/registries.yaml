@@ -1,0 +1,8 @@
+# Копируется в /etc/rancher/k3s/registries.yaml. Почему так — docs/adr/0002-image-sources.md.
+# Docker Hub из России отдаёт манифесты, но обрывает скачивание слоёв со своего CDN,
+# поэтому образы docker.io узел берёт с зеркала Google. Манифесты проекта от этого
+# не меняются: в них по-прежнему ubuntu:24.04 и другие обычные адреса.
+mirrors:
+  docker.io:
+    endpoint:
+      - "https://mirror.gcr.io"
