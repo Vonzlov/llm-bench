@@ -1,20 +1,21 @@
 # Корень uv workspace. Сам по себе корень — не пакет: он собирает приложения
-# из apps/ (позже и общий пакет из packages/) в одно окружение для разработки.
+# из apps/ и общий пакет из packages/ в одно окружение для разработки.
 [project]
 name = "llm-bench"
 version = "0.1.0"
 description = "Сервис выбора LLM под задачу: качество, скорость и цена моделей на одной машине с GPU"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["fake-llm"]
+dependencies = ["bench-core", "fake-llm"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["apps/*"]
+members = ["apps/*", "packages/*"]
 
 [tool.uv.sources]
+bench-core = { workspace = true }
 fake-llm = { workspace = true }
 
 [dependency-groups]
@@ -38,13 +39,13 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
 ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["fake_llm", "tests"]
+known-first-party = ["bench_core", "fake_llm", "tests"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["apps/fake-llm/src", "tests"]
+files = ["apps/fake-llm/src", "packages/core/src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
