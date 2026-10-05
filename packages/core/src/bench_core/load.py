@@ -1,0 +1,154 @@
+"""Генератор нагрузки: закрытая модель, ступени параллельности, прогрев и окно замера.
+
+Закрытая модель: N воркеров, каждый шлёт следующий запрос сразу после ответа на
+предыдущий, поэтому на сервере всегда ровно N запросов. Первые warmup_s секунд
+ступени — прогрев, их не считаем. Следующие measure_s секунд — окно замера. После
+окна новые запросы не отправляются, а начатые дожидаемся, чтобы следующая ступень
+стартовала на пустом сервере.
+
+Что считается в окне:
+- задержки (TTFT, ITL, полное время) и ошибки — по запросам, которые в окне и начались,
+  и закончились. Запрос, начатый во время прогрева, задержки не портит;
+- токены в секунду — по всем токенам, пришедшим в окне, от любых запросов. Так
+  пропускная способность не теряет запросы, разрезанные краями окна;
+- успешные запросы в секунду — по запросам, которые закончились в окне.
+"""
+
+import asyncio
+import itertools
+import math
+import time
+from collections import Counter
+from dataclasses import dataclass
+
+import httpx
+
+from bench_core.client import Measurement, stream_chat
+
+# Ступени из методики: сколько запросов одновременно держим на сервере.
+DEFAULT_LEVELS = (1, 2, 4, 8, 16, 32)
+# Если сервер недоступен, воркер не долбит его в цикле, а ждёт перед следующей попыткой.
+CONNECT_ERROR_PAUSE_S = 1.0
+
+
+@dataclass
+class LevelResult:
+    """Итоги одной ступени — то, что ляжет в таблицу load_levels. Времена в секундах."""
+
+    concurrency: int
+    measure_s: float
+    # Запросы, которые начались и закончились в окне замера, и сколько из них с ошибкой.
+    n_requests: int
+    n_errors: int
+    errors: dict[str, int]
+    ttft_p50_s: float | None
+    ttft_p95_s: float | None
+    itl_p50_s: float | None
+    itl_p95_s: float | None
+    latency_p50_s: float | None
+    latency_p95_s: float | None
+    tokens_per_s: float
+    requests_per_s: float
+
+
+async def run_level(
+    client: httpx.AsyncClient,
+    *,
+    model: str,
+    prompts: list[str],
+    concurrency: int,
+    max_tokens: int,
+    warmup_s: float,
+    measure_s: float,
+) -> LevelResult:
+    """Держит на сервере concurrency запросов в течение прогрева и окна замера."""
+    results: list[Measurement] = []
+    level_start = time.perf_counter()
+    stop_at = level_start + warmup_s + measure_s
+    # Общий счётчик на всех воркеров: промпты идут по кругу, без повторов подряд.
+    prompt_numbers = itertools.count()
+
+    async def worker() -> None:
+        while time.perf_counter() < stop_at:
+            prompt = prompts[next(prompt_numbers) % len(prompts)]
+            result = await stream_chat(
+                client,
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+            )
+            results.append(result)
+            # Сервер просит подождать (429 с Retry-After) — ждём, как сделал бы настоящий клиент.
+            if result.retry_after_s:
+                await asyncio.sleep(result.retry_after_s)
+            elif result.error == "connect":
+                await asyncio.sleep(CONNECT_ERROR_PAUSE_S)
+
+    await asyncio.gather(*(worker() for _ in range(concurrency)))
+    return summarize(
+        results,
+        level_start=level_start,
+        concurrency=concurrency,
+        warmup_s=warmup_s,
+        measure_s=measure_s,
+    )
+
+
+def summarize(
+    results: list[Measurement],
+    *,
+    level_start: float,
+    concurrency: int,
+    warmup_s: float,
+    measure_s: float,
+) -> LevelResult:
+    """Сводит замеры ступени в итог по правилам окна из описания модуля."""
+    window_start = level_start + warmup_s
+    window_end = window_start + measure_s
+
+    inside = [
+        r for r in results if r.sent_at >= window_start and r.sent_at + r.latency_s <= window_end
+    ]
+    ok = [r for r in inside if r.ok]
+    errors = Counter(r.error for r in inside if r.error is not None)
+
+    ttfts = [r.ttft_s for r in ok if r.ttft_s is not None]
+    itls = [itl for r in ok for itl in r.itl_s]
+    latencies = [r.latency_s for r in ok]
+
+    # Токены считаем по чанкам: у vLLM и Ollama один чанк стрима — один токен.
+    tokens_in_window = 0
+    for r in results:
+        for arrived in r.chunk_times_s:
+            if window_start <= r.sent_at + arrived < window_end:
+                tokens_in_window += 1
+    finished_ok = [
+        r for r in results if r.ok and window_start <= r.sent_at + r.latency_s < window_end
+    ]
+
+    return LevelResult(
+        concurrency=concurrency,
+        measure_s=measure_s,
+        n_requests=len(inside),
+        n_errors=len(inside) - len(ok),
+        errors=dict(errors),
+        ttft_p50_s=percentile(ttfts, 50),
+        ttft_p95_s=percentile(ttfts, 95),
+        itl_p50_s=percentile(itls, 50),
+        itl_p95_s=percentile(itls, 95),
+        latency_p50_s=percentile(latencies, 50),
+        latency_p95_s=percentile(latencies, 95),
+        tokens_per_s=tokens_in_window / measure_s,
+        requests_per_s=len(finished_ok) / measure_s,
+    )
+
+
+def percentile(values: list[float], q: float) -> float | None:
+    """Перцентиль с линейной интерполяцией между соседними значениями, как numpy.percentile."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * q / 100
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)

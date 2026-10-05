@@ -27,6 +27,9 @@ class Measurement:
     ok: bool = False
     # Что пошло не так: http_<код>, truncated, timeout, connect, protocol, bad_chunk, stream_error.
     error: str | None = None
+    # Момент отправки по time.perf_counter(). По нему генератор нагрузки кладёт запросы
+    # разных воркеров на общую шкалу времени.
+    sent_at: float = 0.0
     status_code: int | None = None
     # Время до первого непустого токена. None, если ни один токен не пришёл.
     ttft_s: float | None = None
@@ -85,8 +88,8 @@ async def stream_chat(
         "stream_options": {"include_usage": True},
         **(extra_body or {}),
     }
-    result = Measurement()
     started = time.perf_counter()
+    result = Measurement(sent_at=started)
     try:
         async with client.stream("POST", CHAT_PATH, json=body) as response:
             result.status_code = response.status_code
