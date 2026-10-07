@@ -32,7 +32,6 @@
 
 import asyncio
 import itertools
-import math
 import time
 import uuid
 from collections import Counter
@@ -41,6 +40,7 @@ from dataclasses import dataclass
 import httpx
 
 from bench_core.client import Measurement, stream_chat
+from bench_core.stats import percentile
 
 # Ступени из методики: сколько запросов одновременно держим на сервере.
 DEFAULT_LEVELS = (1, 2, 4, 8, 16, 32)
@@ -163,14 +163,3 @@ def summarize(
         tokens_per_s=tokens_in_window / measure_s,
         requests_per_s=len(finished_ok) / measure_s,
     )
-
-
-def percentile(values: list[float], q: float) -> float | None:
-    """Перцентиль с линейной интерполяцией между соседними значениями, как numpy.percentile."""
-    if not values:
-        return None
-    ordered = sorted(values)
-    position = (len(ordered) - 1) * q / 100
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)

@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from bench_core.client import Measurement
-from bench_core.load import LevelResult, percentile, run_level, summarize
+from bench_core.load import LevelResult, run_level, summarize
 from tests.unit.fake_llm.helpers import MODEL, StartServer
 
 # Каждый ответ: 100 мс до первого токена и ещё 2 токена по 20 мс — 140 мс на запрос.
@@ -187,11 +187,3 @@ async def test_every_request_is_unique_even_with_a_small_pool() -> None:
     assert len(contents) > 2
     assert len(set(contents)) == len(contents)
     assert all(content.endswith(("\n\nраз", "\n\nдва")) for content in contents)
-
-
-def test_percentile_interpolates_like_numpy() -> None:
-    assert percentile([], 50) is None
-    assert percentile([5.0], 95) == 5.0
-    assert percentile([1.0, 2.0, 3.0, 4.0], 50) == 2.5
-    # numpy.percentile(range(1, 11), 95) == 9.55
-    assert percentile([float(x) for x in range(1, 11)], 95) == pytest.approx(9.55)
