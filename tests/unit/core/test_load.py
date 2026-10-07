@@ -101,7 +101,8 @@ async def test_errors_are_counted_not_raised(start_server: StartServer) -> None:
 
 def test_window_rules() -> None:
     """Ступень началась в момент 100, прогрев 1 с, окно замера 2 с — то есть [101, 103)."""
-    # Начат в прогреве: в задержки не идёт, но его токен в 101,4 входит в пропускную способность.
+    # Отправлен в прогреве: в задержки не идёт. Но его токен в 101,4 входит в пропускную
+    # способность, а закончился он в окне — значит, считается и в запросах в секунду.
     warmup = Measurement(
         ok=True, sent_at=100.5, latency_s=1.0, ttft_s=0.1, chunk_times_s=[0.1, 0.9]
     )
@@ -111,26 +112,50 @@ def test_window_rules() -> None:
     )
     # Ошибка в окне: считается в запросах и ошибках, но не в задержках.
     failed = Measurement(ok=False, error="http_500", sent_at=101.5, latency_s=0.01)
-    # Закончился после окна: в задержки не идёт, токен в 102,9 входит, в 103,1 — уже нет.
-    late = Measurement(ok=True, sent_at=102.8, latency_s=0.5, ttft_s=0.1, chunk_times_s=[0.1, 0.3])
+    # Отправлен в окне и длится дольше самого окна: в задержки идёт.
+    # Из его токенов в окно попадает только первый, в 102,5.
+    long = Measurement(ok=True, sent_at=102.0, latency_s=4.0, ttft_s=0.5, chunk_times_s=[0.5, 3.5])
+    # Таймаут тоже длиннее окна, и в ошибки он попадает.
+    timeout = Measurement(ok=False, error="timeout", sent_at=102.5, latency_s=300.0)
+    # Отправлен после окна: не считается нигде.
+    after = Measurement(ok=True, sent_at=103.05, latency_s=0.2, ttft_s=0.1, chunk_times_s=[0.1])
 
     result = summarize(
-        [warmup, inside, failed, late],
+        [warmup, inside, failed, long, timeout, after],
         level_start=100.0,
         concurrency=2,
         warmup_s=1.0,
         measure_s=2.0,
     )
 
-    assert result.n_requests == 2
-    assert result.n_errors == 1
-    assert result.errors == {"http_500": 1}
-    assert result.ttft_p50_s == 0.2
-    assert result.latency_p50_s == 0.5
-    # Токены в окне: один от warmup, два от inside, один от late — 4 за 2 секунды.
+    assert result.n_requests == 4
+    assert result.n_errors == 2
+    assert result.errors == {"http_500": 1, "timeout": 1}
+    # Задержки — по inside и long.
+    assert result.ttft_p50_s == pytest.approx(0.35)
+    assert result.latency_p50_s == pytest.approx(2.25)
+    # Токены в окне: один от warmup, два от inside, один от long — 4 за 2 секунды.
     assert result.tokens_per_s == 2.0
     # Успешно закончились в окне warmup и inside — 2 за 2 секунды.
     assert result.requests_per_s == 1.0
+
+
+async def test_request_sent_in_window_counts_even_if_it_ends_later(
+    start_server: StartServer,
+) -> None:
+    """Каждый ответ идёт 0,3 с, окно замера — [0,1; 0,5) от начала ступени.
+
+    Первый запрос воркера уходит в прогреве. Второй уходит около 0,3 с, внутри окна,
+    а заканчивается около 0,6 с, уже после окна. Третьего нет: окно к тому времени
+    кончилось. По правилу «начался и закончился в окне» второй запрос выпадал бы,
+    и ступень показала бы ноль запросов.
+    """
+    base_url = start_server(ttft_ms=300, tokens_per_second=1000, output_tokens=3)
+    result = await load(base_url, concurrency=2, warmup_s=0.1, measure_s=0.4)
+
+    assert result.n_requests == 2
+    assert result.n_errors == 0
+    assert result.latency_p50_s is not None and result.latency_p50_s >= 0.3
 
 
 def test_percentile_interpolates_like_numpy() -> None:

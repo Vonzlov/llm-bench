@@ -7,11 +7,24 @@
 стартовала на пустом сервере.
 
 Что считается в окне:
-- задержки (TTFT, ITL, полное время) и ошибки — по запросам, которые в окне и начались,
-  и закончились. Запрос, начатый во время прогрева, задержки не портит;
+- задержки (TTFT, ITL, полное время) и ошибки — по запросам, отправленным в окне,
+  сколько бы они ни длились: после окна мы их дожидаемся. Запрос, начатый во время
+  прогрева, в задержки не попадает;
 - токены в секунду — по всем токенам, пришедшим в окне, от любых запросов. Так
   пропускная способность не теряет запросы, разрезанные краями окна;
 - успешные запросы в секунду — по запросам, которые закончились в окне.
+
+Почему задержки отбираются по моменту отправки, а не «начался и закончился в окне».
+Длина запроса не зависит от того, когда он отправлен, поэтому такой отбор не смещает
+перцентили. А в момент конца окна в полёте чаще оказываются длинные запросы (парадокс
+инспекции): если требовать, чтобы запрос закончился в окне, выпадают как раз они,
+и p95 занижается. Запрос длиннее окна, в том числе таймаут, не попал бы в итог никогда.
+Так же отбирает запросы NVIDIA AIPerf: окно --benchmark-duration и ожидание начатых
+--benchmark-grace-period.
+
+Цена этого правила: последние N запросов доезжают, когда новые уже не отправляются и
+нагрузка падает. У движков с батчингом их хвост от этого чуть быстрее, а у очереди,
+где запросы обслуживаются по одному, не меняется ничего.
 """
 
 import asyncio
@@ -37,7 +50,7 @@ class LevelResult:
 
     concurrency: int
     measure_s: float
-    # Запросы, которые начались и закончились в окне замера, и сколько из них с ошибкой.
+    # Запросы, отправленные в окне замера, и сколько из них с ошибкой.
     n_requests: int
     n_errors: int
     errors: dict[str, int]
@@ -106,11 +119,10 @@ def summarize(
     window_start = level_start + warmup_s
     window_end = window_start + measure_s
 
-    inside = [
-        r for r in results if r.sent_at >= window_start and r.sent_at + r.latency_s <= window_end
-    ]
-    ok = [r for r in inside if r.ok]
-    errors = Counter(r.error for r in inside if r.error is not None)
+    # Задержки и ошибки — по запросам, отправленным в окне, даже если они закончились позже.
+    measured = [r for r in results if window_start <= r.sent_at < window_end]
+    ok = [r for r in measured if r.ok]
+    errors = Counter(r.error for r in measured if r.error is not None)
 
     ttfts = [r.ttft_s for r in ok if r.ttft_s is not None]
     itls = [itl for r in ok for itl in r.itl_s]
@@ -129,8 +141,8 @@ def summarize(
     return LevelResult(
         concurrency=concurrency,
         measure_s=measure_s,
-        n_requests=len(inside),
-        n_errors=len(inside) - len(ok),
+        n_requests=len(measured),
+        n_errors=len(measured) - len(ok),
         errors=dict(errors),
         ttft_p50_s=percentile(ttfts, 50),
         ttft_p95_s=percentile(ttfts, 95),
