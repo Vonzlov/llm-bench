@@ -6,6 +6,9 @@
 окна новые запросы не отправляются, а начатые дожидаемся, чтобы следующая ступень
 стартовала на пустом сервере.
 
+Промпты идут по кругу из пула, но каждый запрос начинается со своего номера: так сервер
+не возьмёт из кеша префилл промпта, который уже видел.
+
 Что считается в окне:
 - задержки (TTFT, ITL, полное время) и ошибки — по запросам, отправленным в окне,
   сколько бы они ни длились: после окна мы их дожидаемся. Запрос, начатый во время
@@ -31,6 +34,7 @@ import asyncio
 import itertools
 import math
 import time
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 
@@ -80,14 +84,20 @@ async def run_level(
     stop_at = level_start + warmup_s + measure_s
     # Общий счётчик на всех воркеров: промпты идут по кругу, без повторов подряд.
     prompt_numbers = itertools.count()
+    # Метка ступени и номер запроса в начале делают каждый промпт уникальным, даже между
+    # прогонами. Иначе кеш префиксов сервера (в vLLM он включён по умолчанию) узнал бы
+    # повторный промпт и пропустил префилл, и время до первого токена вышло бы лучше,
+    # чем у живых пользователей с разными запросами.
+    level_tag = uuid.uuid4().hex[:8]
 
     async def worker() -> None:
         while time.perf_counter() < stop_at:
-            prompt = prompts[next(prompt_numbers) % len(prompts)]
+            number = next(prompt_numbers)
+            prompt = prompts[number % len(prompts)]
             result = await stream_chat(
                 client,
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": f"Запрос {level_tag}-{number}.\n\n{prompt}"}],
                 max_tokens=max_tokens,
             )
             results.append(result)

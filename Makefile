@@ -1,5 +1,5 @@
 # Единая точка входа: если команду приходится вспоминать, ей место здесь.
-.PHONY: install lint format typecheck test check fake-llm probe load image-fake-llm
+.PHONY: install lint format typecheck test check fake-llm probe load datasets image-fake-llm
 
 install:
 	uv sync
@@ -33,6 +33,10 @@ probe:
 # Полный прогон по методике — uv run bench-load без аргументов, около 14 минут.
 load:
 	uv run bench-load --levels 1,2,4,8 --warmup 2 --measure 10 --max-tokens 32
+
+# Открытые наборы MASSIVE и XQuAD: скачивает около 42 МБ в data/raw и собирает JSONL в data/.
+datasets:
+	uv run bench-datasets
 
 image-fake-llm:
 	docker build -f apps/fake-llm/Dockerfile -t llm-bench/fake-llm:dev .

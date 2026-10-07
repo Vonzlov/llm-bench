@@ -2,19 +2,23 @@
 
     uv run bench-load
     uv run bench-load --levels 1,2,4,8 --warmup 2 --measure 10
+    uv run bench-load --prompts data/xquad-ru-load.jsonl
 
 Без аргументов прогон идёт по методике: ступени 1–32, 20 секунд прогрева и 120 секунд
 замера на каждой, это около 14 минут. Вторая команда — быстрый прогон, как make load.
 По умолчанию нагрузка идёт в фейковую модель на localhost:8000.
 
-Промпты пока короткие и встроенные: пул из абзацев XQuAD появится вместе с загрузкой
-наборов данных. Ключ API, если он нужен, берётся из переменной окружения BENCH_API_KEY.
+Без --prompts в ход идут пять коротких встроенных вопросов — для проверки стенда этого
+хватает. Для замеров по методике нужен пул из абзацев XQuAD, его собирает make datasets.
+Ключ API, если он нужен, берётся из переменной окружения BENCH_API_KEY.
 """
 
 import argparse
 import asyncio
+import json
 import os
 import sys
+from pathlib import Path
 
 import httpx
 
@@ -43,12 +47,37 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--measure", type=float, default=120.0, help="окно замера, секунды")
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--timeout", type=float, default=300.0, help="таймаут запроса, секунды")
+    parser.add_argument(
+        "--prompts",
+        type=Path,
+        help="JSONL с промптами в поле input, например data/xquad-ru-load.jsonl",
+    )
     args = parser.parse_args(argv)
 
     args.levels = [int(level) for level in args.levels.split(",")]
     if min(args.levels) < 1 or args.warmup < 0 or args.measure <= 0:
         parser.error("ступени — целые числа от 1, прогрев не меньше 0, замер больше 0")
+    try:
+        args.prompt_list = read_prompts(args.prompts) if args.prompts else DEFAULT_PROMPTS
+    except (OSError, ValueError, KeyError) as error:
+        parser.error(f"не удалось прочитать промпты: {error}")
     return args
+
+
+def read_prompts(path: Path) -> list[str]:
+    """Промпты из набора в JSONL: поле input каждой строки должно быть строкой."""
+    prompts = []
+    with path.open(encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            prompt = json.loads(line)["input"]
+            if not isinstance(prompt, str):
+                raise ValueError(f"{path}: поле input должно быть строкой")
+            prompts.append(prompt)
+    if not prompts:
+        raise ValueError(f"{path}: в файле нет промптов")
+    return prompts
 
 
 def pair(p50: float | None, p95: float | None, digits: int) -> str:
@@ -113,7 +142,7 @@ async def run(args: argparse.Namespace) -> list[LevelResult]:
             result = await run_level(
                 client,
                 model=args.model,
-                prompts=DEFAULT_PROMPTS,
+                prompts=args.prompt_list,
                 concurrency=concurrency,
                 max_tokens=args.max_tokens,
                 warmup_s=args.warmup,
@@ -129,6 +158,8 @@ def main(argv: list[str] | None = None) -> None:
     minutes = len(args.levels) * (args.warmup + args.measure) / 60
     url = f"{args.base_url.rstrip('/')}{CHAT_PATH}"
     print(f"POST {url}, модель {args.model}")
+    prompts_source = args.prompts or "встроенные"
+    print(f"промпты: {prompts_source}, {len(args.prompt_list)} шт.")
     print(
         f"ступени {args.levels}, прогрев {args.warmup:g} с, замер {args.measure:g} с"
         f" — около {minutes:.1f} мин"

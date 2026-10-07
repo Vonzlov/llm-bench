@@ -14,6 +14,8 @@ OLLAMA_NUM_PARALLEL=1: пропускная способность стоит, �
 точность линейки проверяют тесты клиента в test_client.py.
 """
 
+import json
+
 import httpx
 import pytest
 
@@ -156,6 +158,35 @@ async def test_request_sent_in_window_counts_even_if_it_ends_later(
     assert result.n_requests == 2
     assert result.n_errors == 0
     assert result.latency_p50_s is not None and result.latency_p50_s >= 0.3
+
+
+async def test_every_request_is_unique_even_with_a_small_pool() -> None:
+    """Пул из двух промптов, а все запросы разные: у каждого в начале свой номер.
+
+    Иначе кеш префиксов сервера пропустил бы префилл повторных промптов.
+    """
+    contents: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        contents.append(json.loads(request.content)["messages"][0]["content"])
+        chunk = json.dumps({"choices": [{"delta": {"content": "ок"}, "finish_reason": "stop"}]})
+        return httpx.Response(200, content=f"data: {chunk}\n\ndata: [DONE]\n\n".encode())
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(base_url="http://test/v1", transport=transport) as client:
+        await run_level(
+            client,
+            model=MODEL,
+            prompts=["раз", "два"],
+            concurrency=2,
+            max_tokens=1,
+            warmup_s=0.0,
+            measure_s=0.05,
+        )
+
+    assert len(contents) > 2
+    assert len(set(contents)) == len(contents)
+    assert all(content.endswith(("\n\nраз", "\n\nдва")) for content in contents)
 
 
 def test_percentile_interpolates_like_numpy() -> None:
