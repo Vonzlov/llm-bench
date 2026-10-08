@@ -154,6 +154,8 @@ def main(argv: list[str] | None = None) -> None:
     elapsed_s = time.perf_counter() - started
     metrics = task.summarize(results)
     errors = Counter(result.error for result in results if result.error is not None)
+    # Ответы, которые модель не закончила сама, а оборвал лимит токенов.
+    truncated = sum(1 for result in results if result.finish_reason == "length")
     latency_p50_s = percentile([r.latency_s for r in results if r.error is None], 50)
 
     print("метрики; интервал — 95-процентный, бутстреп по 1000 выборкам:")
@@ -162,6 +164,8 @@ def main(argv: list[str] | None = None) -> None:
     if errors:
         details = ", ".join(f"{kind} ×{count}" for kind, count in sorted(errors.items()))
         print(f"ошибки запросов, засчитаны как неверные ответы: {details}")
+    if truncated:
+        print(f"обрезано лимитом в {max_tokens} токенов: {truncated} ответов из {len(results)}")
     if latency_p50_s is not None:
         print(f"время ответа p50: {latency_p50_s:.2f} с, весь прогон: {elapsed_s:.0f} с")
 
@@ -180,6 +184,7 @@ def main(argv: list[str] | None = None) -> None:
         "seed": SEED,
         "metrics": {name: asdict(value) for name, value in metrics.items()},
         "errors": dict(errors),
+        "truncated": truncated,
         "latency_p50_s": latency_p50_s,
         "elapsed_s": round(elapsed_s, 1),
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),

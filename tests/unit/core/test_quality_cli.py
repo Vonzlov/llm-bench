@@ -64,6 +64,23 @@ def test_writes_answers_and_summary(
     assert summary["metrics"]["accuracy"]["value"] == 0.0
     assert summary["metrics"]["out_of_list"]["value"] == 1.0
     assert summary["dataset_version"] == "ab" * 32
+    assert summary["truncated"] == 0
+
+
+def test_reports_answers_cut_by_token_limit(
+    start_server: StartServer, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Фейковая модель хочет ответить 64 токенами, а лимит — 8: оба ответа обрезаны."""
+    dataset = make_dataset(tmp_path)
+    base_url = start_server(ttft_ms=0, tokens_per_second=100_000, output_tokens=64)
+    out = tmp_path / "results" / "demo.jsonl"
+    args = ["--dataset", str(dataset), "--base-url", f"{base_url}/v1", "--out", str(out)]
+
+    main([*args, "--max-tokens", "8"])
+
+    assert "обрезано лимитом в 8 токенов: 2 ответов из 2" in capsys.readouterr().out
+    summary = json.loads((tmp_path / "results" / "demo.summary.json").read_text())
+    assert summary["truncated"] == 2
 
 
 def test_extraction_with_schema_goes_to_its_own_file(

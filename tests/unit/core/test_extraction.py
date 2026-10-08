@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from bench_core.extraction import (
+    MAX_SLOTS,
     build_messages,
     normalize,
     parse_json,
@@ -65,15 +66,20 @@ def test_slots_follow_the_schema() -> None:
         {"slots": [{"type": "time", "value": 5}]},
         {"slots": [{"type": "time", "value": "пять утра", "confidence": 0.9}]},
         {"slots": [], "comment": "ничего не нашёл"},
+        # Пустое значение: так маленькая модель перечисляет типы, которых в тексте нет.
+        {"slots": [{"type": "time", "value": ""}]},
+        # Больше MAX_SLOTS слотов.
+        {"slots": [{"type": "time", "value": f"{hour} утра"} for hour in range(11)]},
     ],
 )
 def test_slots_off_schema_are_rejected(data: Any) -> None:
     assert slots_from(data, LABELS) is None
 
 
-def test_values_compare_without_case_spaces_and_edge_punctuation() -> None:
+def test_values_compare_without_case_spaces_edge_punctuation_and_yo() -> None:
     assert normalize("  Пять   Утра. ") == "пять утра"
     assert normalize("«этой неделе»") == "этой неделе"
+    assert normalize("пятизвёздочных") == normalize("ПЯТИЗВЕЗДОЧНЫХ")
 
 
 def test_score_counts_pairs_of_type_and_value() -> None:
@@ -113,12 +119,15 @@ def test_micro_f1_sums_slots_over_all_examples() -> None:
     assert metrics["slot_f1"].value == pytest.approx(2 / 3)
 
 
-def test_schema_allows_only_listed_types() -> None:
-    slot = schema(LABELS)["properties"]["slots"]["items"]
+def test_schema_allows_only_listed_types_and_bounds_the_answer() -> None:
+    slots = schema(LABELS)["properties"]["slots"]
+    slot = slots["items"]
 
     assert slot["properties"]["type"]["enum"] == LABELS
+    assert slot["properties"]["value"]["minLength"] == 1
     assert slot["additionalProperties"] is False
     assert slot["required"] == ["type", "value"]
+    assert slots["maxItems"] == MAX_SLOTS
 
 
 def test_prompt_lists_types_and_text() -> None:
@@ -126,4 +135,5 @@ def test_prompt_lists_types_and_text() -> None:
 
     assert system["content"].endswith("Типы:\ndate\nplace_name\ntime")
     assert '{"slots": []}' in system["content"]
+    assert "без предлогов" in system["content"]
     assert user == {"role": "user", "content": "Текст: разбуди меня в пять утра"}

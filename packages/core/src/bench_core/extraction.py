@@ -4,6 +4,11 @@
 дословный фрагмент текста. Корень — объект, а не массив: такую схему принимают и vLLM,
 и Ollama, и облачные API с ограниченной генерацией.
 
+Границы значения промпт задаёт явно: только сама сущность, без предлогов и соседних слов.
+Так размечен эталон MASSIVE: предлог стоит перед значением у трети слотов, а внутрь
+значения попадает только у 3%. Без этого правила модель не может угадать, где у
+значения границы, и теряет верные ответы на «на этой неделе» вместо «этой неделе».
+
 Задача идёт в двух режимах. В свободном модель пишет ответ сама, а мы его разбираем;
 снисхождение одно — разрешаем обернуть JSON в блок кода Markdown. В ограниченном
 (--constrained) движок получает JSON-схему и не даёт модели выйти за неё. Два прогона
@@ -12,10 +17,12 @@
 Метрики:
 - валидный JSON — доля ответов, которые разбираются как JSON;
 - по схеме — доля ответов, которые ещё и подходят под схему: объект с одним полем
-  slots, у каждого слота ровно поля type и value, type из списка, value — строка;
+  slots, в нём не больше MAX_SLOTS слотов, у каждого ровно поля type и value, type из
+  списка, value — непустая строка. Свободный режим проверяем по той же схеме;
 - F1 по слотам — micro-F1 по парам «тип — значение» на всём наборе. Значения сравниваем
-  без учёта регистра, лишних пробелов и знаков препинания по краям. Ответ не по схеме
-  не находит ни одного слота: все эталонные слоты примера становятся пропущенными.
+  без учёта регистра, лишних пробелов и знаков препинания по краям, е и ё не различаем.
+  Ответ не по схеме не находит ни одного слота: все эталонные слоты примера становятся
+  пропущенными.
 """
 
 import json
@@ -27,11 +34,18 @@ from typing import Any
 from bench_core.quality import ItemResult, Metric, Scored, Task, metric
 
 SYSTEM_PROMPT = (
-    "Найди в тексте все сущности перечисленных типов. Ответь только JSON-объектом вида "
-    '{"slots": [{"type": "тип", "value": "значение"}]}, где значение — дословный фрагмент '
-    'текста. Если сущностей нет, ответь {"slots": []}.\n\n'
+    "Найди в тексте сущности перечисленных типов. Включай в ответ только сущности, которые "
+    "действительно есть в тексте; типы, которых в тексте нет, не перечисляй. Значение — "
+    "дословный фрагмент текста, как можно короче: только сама сущность, без предлогов и "
+    "соседних слов. Ответь только JSON-объектом вида "
+    '{"slots": [{"type": "тип", "value": "значение"}]}. Если подходящих сущностей нет, '
+    'ответь {"slots": []}.\n\n'
     "Типы:\n"
 )
+# Потолок числа слотов в ответе. В эталоне MASSIVE их не больше пяти на фразу; без потолка
+# маленькая модель в режиме со схемой перечисляет все типы подряд, пока не упрётся в лимит
+# токенов, и JSON обрывается на середине.
+MAX_SLOTS = 10
 # Блок кода Markdown вокруг JSON: ```json … ``` — модели часто так оборачивают ответ.
 FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 # Что срезаем по краям значения перед сравнением.
@@ -46,19 +60,20 @@ def build_messages(item: dict[str, Any], labels: list[str]) -> list[dict[str, st
 
 
 def schema(labels: list[str]) -> dict[str, Any]:
-    """JSON-схема ответа для ограниченной генерации: тип слота — только из списка."""
+    """JSON-схема ответа: тип слота — из списка, значение непустое, слотов не больше MAX_SLOTS."""
     slot = {
         "type": "object",
         "properties": {
             "type": {"type": "string", "enum": labels},
-            "value": {"type": "string"},
+            "value": {"type": "string", "minLength": 1},
         },
         "required": ["type", "value"],
         "additionalProperties": False,
     }
+    slots = {"type": "array", "items": slot, "maxItems": MAX_SLOTS}
     return {
         "type": "object",
-        "properties": {"slots": {"type": "array", "items": slot}},
+        "properties": {"slots": slots},
         "required": ["slots"],
         "additionalProperties": False,
     }
@@ -77,8 +92,10 @@ def parse_json(output: str) -> tuple[bool, Any]:
 
 
 def slots_from(data: Any, labels: list[str]) -> list[dict[str, str]] | None:
-    """Слоты, если разобранный JSON подходит под схему; иначе None."""
+    """Слоты, если разобранный JSON подходит под схему из schema(); иначе None."""
     if not isinstance(data, dict) or set(data) != {"slots"} or not isinstance(data["slots"], list):
+        return None
+    if len(data["slots"]) > MAX_SLOTS:
         return None
     allowed = set(labels)
     for slot in data["slots"]:
@@ -86,12 +103,14 @@ def slots_from(data: Any, labels: list[str]) -> list[dict[str, str]] | None:
             return None
         if slot["type"] not in allowed or not isinstance(slot["value"], str):
             return None
+        if not slot["value"]:
+            return None
     return [{"type": slot["type"], "value": slot["value"]} for slot in data["slots"]]
 
 
 def normalize(value: str) -> str:
-    """Значение для сравнения: без регистра, лишних пробелов и знаков препинания по краям."""
-    return " ".join(value.casefold().strip(EDGE_CHARS).split())
+    """Значение для сравнения: без регистра, лишних пробелов и знаков по краям, ё как е."""
+    return " ".join(value.casefold().replace("ё", "е").strip(EDGE_CHARS).split())
 
 
 def counts(
