@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import pytest
 
-from bench_core import classification, quality
+from bench_core import classification, extraction, quality
 from bench_core.quality import run_task
 from bench_core.stats import SEED
 
@@ -84,6 +84,42 @@ async def test_runner_scores_answers_and_retries_temporary_errors(
     assert results[3].error == "http_500"
     assert calls["сломанный"] == quality.ATTEMPTS
     assert all(body["temperature"] == 0 and body["seed"] == SEED for body in bodies)
+    # Свободная генерация: схему движку не передаём.
+    assert all("response_format" not in body for body in bodies)
+
+
+async def test_constrained_mode_sends_json_schema() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, content=sse('{"slots": [{"type": "time", "value": "семь"}]}'))
+
+    expected = [{"type": "time", "value": "семь"}]
+    items = [{"id": "1", "input": "разбуди меня в семь", "expected": expected}]
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(base_url="http://test/v1", transport=transport) as client:
+        results = await run_task(
+            client,
+            extraction.TASK,
+            model="m",
+            items=items,
+            labels=["date", "time"],
+            concurrency=1,
+            max_tokens=64,
+            constrained=True,
+        )
+
+    response_format = bodies[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["schema"] == extraction.schema(["date", "time"])
+    assert results[0].score == 1.0
+    assert results[0].checks == {"valid_json": True, "schema_ok": True}
+
+
+def test_constrained_mode_needs_a_schema() -> None:
+    with pytest.raises(ValueError, match="JSON-схемой"):
+        quality.response_format(classification.TASK, LABELS)
 
 
 async def test_runner_keeps_at_most_concurrency_requests_in_flight() -> None:

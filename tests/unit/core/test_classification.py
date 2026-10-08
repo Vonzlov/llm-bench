@@ -22,6 +22,7 @@ def result(expected: str, prediction: str | None, error: str | None = None) -> I
         output="",
         prediction=prediction,
         score=float(prediction == expected),
+        checks={},
         error=error,
         finish_reason="stop",
         latency_s=0.1,

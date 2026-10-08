@@ -1,11 +1,12 @@
 """Команда bench-quality на фейковой модели: метрики, файлы с ответами и коды выхода.
 
-Фейковая модель отвечает словами «альфа бета гамма…», то есть всегда не из списка, —
+Фейковая модель отвечает словами «альфа бета гамма…», то есть всегда не по формату, —
 этого хватает, чтобы проверить всю цепочку от набора до файла с итогом.
 """
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,26 +14,35 @@ from bench_core import quality
 from bench_core.quality_cli import main
 from tests.unit.fake_llm.helpers import StartServer
 
-ITEMS = [
+INTENTS = [
     {"id": "1", "input": "разбуди меня в семь", "expected": "alarm_set"},
     {"id": "2", "input": "какая погода завтра", "expected": "weather_query"},
 ]
+SLOTS = [
+    {"id": "1", "input": "разбуди меня в семь", "expected": [{"type": "time", "value": "семь"}]},
+    {"id": "2", "input": "какая погода завтра", "expected": [{"type": "date", "value": "завтра"}]},
+]
 
 
-def make_dataset(tmp_path: Path, task_type: str = "classification") -> Path:
+def make_dataset(
+    tmp_path: Path,
+    task_type: str = "classification",
+    items: list[dict[str, Any]] = INTENTS,
+    labels: tuple[str, ...] = ("alarm_set", "weather_query"),
+) -> Path:
     data = tmp_path / "data"
     data.mkdir()
-    path = data / "demo-intent.jsonl"
-    path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in ITEMS))
+    path = data / "demo.jsonl"
+    path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in items))
     entry = {
         "task_type": task_type,
-        "n_items": len(ITEMS),
+        "n_items": len(items),
         "version_hash": "ab" * 32,
         "source": "тест",
         "license": "CC0",
-        "labels": ["alarm_set", "weather_query"],
+        "labels": list(labels),
     }
-    (data / "manifest.json").write_text(json.dumps({"demo-intent": entry}, ensure_ascii=False))
+    (data / "manifest.json").write_text(json.dumps({"demo": entry}, ensure_ascii=False))
     return path
 
 
@@ -54,6 +64,38 @@ def test_writes_answers_and_summary(
     assert summary["metrics"]["accuracy"]["value"] == 0.0
     assert summary["metrics"]["out_of_list"]["value"] == 1.0
     assert summary["dataset_version"] == "ab" * 32
+
+
+def test_extraction_with_schema_goes_to_its_own_file(
+    start_server: StartServer,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Прогон со схемой не затирает свободный: к имени файла добавляется --schema."""
+    dataset = make_dataset(tmp_path, "extraction", SLOTS, ("date", "time"))
+    base_url = start_server(ttft_ms=0, tokens_per_second=100_000)
+    monkeypatch.chdir(tmp_path)
+
+    main(["--dataset", str(dataset), "--base-url", f"{base_url}/v1", "--constrained"])
+
+    assert "валидный JSON" in capsys.readouterr().out
+    summary_path = tmp_path / "data" / "results" / "demo--fake-llm--schema.summary.json"
+    summary = json.loads(summary_path.read_text())
+    assert summary["constrained"] is True
+    assert summary["metrics"]["valid_json"]["value"] == 0.0
+
+
+def test_classification_has_no_schema_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dataset = make_dataset(tmp_path)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--dataset", str(dataset), "--constrained"])
+
+    assert exit_info.value.code == 1
+    assert "нет режима с JSON-схемой" in capsys.readouterr().err
 
 
 def test_exits_with_error_when_no_request_succeeds(

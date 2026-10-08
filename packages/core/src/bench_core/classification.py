@@ -13,7 +13,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
-from bench_core.quality import ItemResult, Metric, Task, metric
+from bench_core.quality import ItemResult, Metric, Scored, Task, metric
 
 SYSTEM_PROMPT = (
     "Определи, к какой категории относится текст. Выбери ровно одну категорию из списка "
@@ -37,9 +37,9 @@ def parse(output: str, labels: list[str]) -> str | None:
     return by_lowercase.get(output.strip(EDGE_CHARS).lower())
 
 
-def score(item: dict[str, Any], output: str, labels: list[str]) -> tuple[str | None, float]:
+def score(item: dict[str, Any], output: str, labels: list[str]) -> Scored:
     prediction = parse(output, labels)
-    return prediction, float(prediction == item["expected"])
+    return Scored(prediction, float(prediction == item["expected"]))
 
 
 def accuracy(results: Sequence[ItemResult]) -> float:

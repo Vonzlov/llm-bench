@@ -2,10 +2,12 @@
 
     uv run bench-quality --dataset data/massive-ru-intent.jsonl
     uv run bench-quality --dataset data/massive-ru-intent.jsonl --model llama3.2:3b --limit 50
+    uv run bench-quality --dataset data/massive-ru-slots.jsonl --constrained
 
-Пока умеет классификацию; извлечение и ответы по тексту появятся следующими. Ответ на
+Умеет классификацию и извлечение в JSON; ответы по тексту появятся следующими. Ответ на
 каждый пример пишется в data/results/<набор>--<модель>.jsonl, итог прогона — рядом, в
-<набор>--<модель>.summary.json. Ключ API, если он нужен, берётся из BENCH_API_KEY.
+<набор>--<модель>.summary.json. У прогона с --constrained к имени добавляется --schema.
+Ключ API, если он нужен, берётся из переменной окружения BENCH_API_KEY.
 """
 
 import argparse
@@ -23,13 +25,20 @@ from typing import Any
 
 import httpx
 
-from bench_core import classification
+from bench_core import classification, extraction
 from bench_core.client import CHAT_PATH
 from bench_core.quality import ItemResult, Metric, Task, load_dataset, run_task, write_results
 from bench_core.stats import SEED, percentile
 
-TASKS = {"classification": classification.TASK}
-TITLES = {"accuracy": "точность", "macro_f1": "macro-F1", "out_of_list": "вне списка"}
+TASKS = {"classification": classification.TASK, "extraction": extraction.TASK}
+TITLES = {
+    "accuracy": "точность",
+    "macro_f1": "macro-F1",
+    "out_of_list": "вне списка",
+    "valid_json": "валидный JSON",
+    "schema_ok": "по схеме",
+    "slot_f1": "F1 по слотам",
+}
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -51,6 +60,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, help="только первые N примеров — для быстрой проверки")
     parser.add_argument("--timeout", type=float, default=120.0, help="таймаут запроса, секунды")
     parser.add_argument("--out", type=Path, help="файл для ответов; по умолчанию в data/results/")
+    parser.add_argument(
+        "--constrained",
+        action="store_true",
+        help="ограниченная генерация: движок получает JSON-схему ответа",
+    )
     args = parser.parse_args(argv)
     if args.concurrency < 1 or (args.limit is not None and args.limit < 1):
         parser.error("--concurrency и --limit — целые числа от 1")
@@ -64,7 +78,7 @@ def slug(name: str) -> str:
 
 def format_metric(name: str, value: Metric) -> str:
     title = TITLES.get(name, name)
-    return f"  {title:<11} {value.value:.3f}   интервал [{value.low:.3f}; {value.high:.3f}]"
+    return f"  {title:<13} {value.value:.3f}   интервал [{value.low:.3f}; {value.high:.3f}]"
 
 
 async def run(
@@ -99,6 +113,7 @@ async def run(
             labels=labels,
             concurrency=args.concurrency,
             max_tokens=max_tokens,
+            constrained=args.constrained,
             on_done=progress,
         )
 
@@ -114,17 +129,24 @@ def main(argv: list[str] | None = None) -> None:
     if task is None:
         print(f"ошибка: задачу {entry['task_type']} раннер пока не умеет", file=sys.stderr)
         sys.exit(1)
+    if args.constrained and task.schema is None:
+        print(f"ошибка: у задачи {task.name} нет режима с JSON-схемой", file=sys.stderr)
+        sys.exit(1)
 
     if args.limit:
         items = items[: args.limit]
     labels = entry.get("labels", [])
     max_tokens = args.max_tokens or task.max_tokens
-    out = args.out or Path("data/results") / f"{args.dataset.stem}--{slug(args.model)}.jsonl"
+    mode = "--schema" if args.constrained else ""
+    name = f"{args.dataset.stem}--{slug(args.model)}{mode}.jsonl"
+    out = args.out or Path("data/results") / name
     url = f"{args.base_url.rstrip('/')}{CHAT_PATH}"
     print(f"POST {url}, модель {args.model}")
     print(f"набор {args.dataset.stem}: {task.name}, примеров {len(items)}")
+    generation = "по JSON-схеме" if args.constrained else "свободная"
     print(
-        f"одновременных запросов {args.concurrency}, температура 0, ответ до {max_tokens} токенов"
+        f"одновременных запросов {args.concurrency}, температура 0, ответ до {max_tokens} токенов,"
+        f" генерация {generation}"
     )
 
     started = time.perf_counter()
@@ -153,6 +175,7 @@ def main(argv: list[str] | None = None) -> None:
         "n_items": len(items),
         "concurrency": args.concurrency,
         "max_tokens": max_tokens,
+        "constrained": args.constrained,
         "temperature": 0,
         "seed": SEED,
         "metrics": {name: asdict(value) for name, value in metrics.items()},
