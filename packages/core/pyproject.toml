@@ -10,6 +10,7 @@ bench-probe = "bench_core.probe:main"
 bench-load = "bench_core.load_cli:main"
 bench-datasets = "bench_core.datasets_cli:main"
 bench-quality = "bench_core.quality_cli:main"
+bench-compare = "bench_core.compare_cli:main"
 
 [build-system]
 requires = ["hatchling"]

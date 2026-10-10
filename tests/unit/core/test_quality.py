@@ -7,13 +7,14 @@
 import asyncio
 import json
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
 from bench_core import classification, extraction, quality
-from bench_core.quality import run_task
+from bench_core.quality import ItemResult, read_results, run_task, write_results
 from bench_core.stats import SEED
 
 LABELS = ["alarm_set", "iot_hue_lighton", "weather_query"]
@@ -160,3 +161,78 @@ async def test_runner_keeps_at_most_concurrency_requests_in_flight() -> None:
 
     assert peak == 3
     assert all(result.score == 1.0 for result in results)
+
+
+def answer(item_id: str, expected: str, prediction: str | None) -> ItemResult:
+    return ItemResult(
+        id=item_id,
+        expected=expected,
+        output=prediction or "",
+        prediction=prediction,
+        score=float(prediction == expected),
+        checks={},
+        error=None,
+        finish_reason="stop",
+        latency_s=0.1,
+        prompt_tokens=None,
+        completion_tokens=None,
+    )
+
+
+def test_compare_pairs_answers_by_id_not_by_position() -> None:
+    """Второй прогон — те же ответы в обратном порядке. По id разница везде ровно ноль;
+    сопоставление по порядку в файле дало бы ненулевой разброс."""
+    first = [answer(str(i), "a", "a" if i % 2 else "b") for i in range(20)]
+    second = list(reversed(first))
+
+    difference = quality.compare(classification.TASK, first, second)["accuracy"]
+
+    assert (difference.first, difference.second) == (0.5, 0.5)
+    assert (difference.low, difference.high) == (0.0, 0.0)
+    assert not difference.significant
+
+
+def test_compare_sees_consistent_gain() -> None:
+    """Второй прогон исправил 10 ошибок из 20 и ничего не сломал."""
+    first = [answer(str(i), "a", "a" if i < 20 else "b") for i in range(40)]
+    second = [answer(str(i), "a", "a" if i < 30 else "b") for i in range(40)]
+
+    difference = quality.compare(classification.TASK, first, second)["accuracy"]
+
+    assert difference.delta == 0.25
+    assert difference.low > 0
+    assert difference.significant
+
+
+def test_compare_refuses_runs_on_different_examples() -> None:
+    with pytest.raises(ValueError, match="разных примерах"):
+        quality.compare(classification.TASK, [answer("1", "a", "a")], [answer("2", "a", "a")])
+
+
+def test_results_read_back_as_written(tmp_path: Path) -> None:
+    results = [answer("1", "a", "a"), answer("2", "a", None)]
+    path = tmp_path / "run.jsonl"
+
+    write_results(results, path)
+
+    assert read_results(path) == results
+
+
+def test_results_written_before_checks_existed_are_read(tmp_path: Path) -> None:
+    """Файлы первой версии раннера, до извлечения, поля checks не знают."""
+    line = {
+        "id": "1",
+        "expected": "a",
+        "output": "a",
+        "prediction": "a",
+        "score": 1.0,
+        "error": None,
+        "finish_reason": "stop",
+        "latency_s": 0.1,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+    }
+    path = tmp_path / "old.jsonl"
+    path.write_text(json.dumps(line) + "\n", encoding="utf-8")
+
+    assert read_results(path) == [answer("1", "a", "a")]

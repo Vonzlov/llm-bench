@@ -13,7 +13,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
-from bench_core.quality import ItemResult, Metric, Scored, Task, metric
+from bench_core.quality import ItemResult, Scored, Task
 
 SYSTEM_PROMPT = (
     "Определи, к какой категории относится текст. Выбери ровно одну категорию из списка "
@@ -82,14 +82,6 @@ def out_of_list(results: Sequence[ItemResult]) -> float:
     return misses / len(results)
 
 
-def summarize(results: list[ItemResult]) -> dict[str, Metric]:
-    return {
-        "accuracy": metric(results, accuracy),
-        "macro_f1": metric(results, macro_f1),
-        "out_of_list": metric(results, out_of_list),
-    }
-
-
 TASK = Task(
     name="classification",
     max_tokens=64,
@@ -97,5 +89,5 @@ TASK = Task(
     user_message=user_message,
     render=render,
     score=score,
-    summarize=summarize,
+    metrics={"accuracy": accuracy, "macro_f1": macro_f1, "out_of_list": out_of_list},
 )

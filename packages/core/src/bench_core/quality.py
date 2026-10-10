@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from bench_core.client import Measurement, stream_chat
-from bench_core.stats import SEED, bootstrap_ci
+from bench_core.stats import SEED, bootstrap_ci, paired_bootstrap_ci
 
 ATTEMPTS = 3
 # Пауза перед повтором растёт с номером попытки, если сервер сам не назвал её в Retry-After.
@@ -84,8 +84,8 @@ class Task:
     render: Callable[[Any], str]
     # Пример, текст ответа и варианты → оценка ответа.
     score: Callable[[dict[str, Any], str, list[str]], Scored]
-    # Ответы на все примеры → метрики по названиям.
-    summarize: Callable[[list[ItemResult]], dict[str, Metric]]
+    # Метрики по названиям: ответы на все примеры → число. В этом порядке они идут в отчёт.
+    metrics: dict[str, Callable[[Sequence[ItemResult]], float]]
     # Варианты ответа → JSON-схема для ограниченной генерации; None — такого режима нет.
     schema: Callable[[list[str]], dict[str, Any]] | None = None
 
@@ -119,6 +119,48 @@ def metric(results: list[ItemResult], statistic: Callable[[Sequence[ItemResult]]
     """Метрика по всем ответам и её бутстреп-интервал."""
     low, high = bootstrap_ci(results, statistic)
     return Metric(statistic(results), low, high)
+
+
+def summarize(task: Task, results: list[ItemResult]) -> dict[str, Metric]:
+    """Все метрики задачи по ответам одного прогона."""
+    return {name: metric(results, statistic) for name, statistic in task.metrics.items()}
+
+
+@dataclass
+class Difference:
+    """Метрика двух прогонов на одних примерах и 95-процентный интервал их разницы."""
+
+    first: float
+    second: float
+    low: float
+    high: float
+
+    @property
+    def delta(self) -> float:
+        return self.second - self.first
+
+    @property
+    def significant(self) -> bool:
+        """Разница значима, если её интервал не накрывает ноль."""
+        return self.low > 0 or self.high < 0
+
+
+def compare(task: Task, first: list[ItemResult], second: list[ItemResult]) -> dict[str, Difference]:
+    """Разница метрик двух прогонов на одних и тех же примерах: второй минус первый.
+
+    Ответы сопоставляются по id примера, а не по порядку в файле, и интервал считается
+    парным бутстрепом — оба прогона пересэмплируются по одним и тем же примерам.
+    """
+    second_by_id = {result.id: result for result in second}
+    if set(second_by_id) != {result.id for result in first}:
+        raise ValueError("прогоны сделаны на разных примерах: сравнивать можно только на одних")
+    # Второй прогон в порядке первого: second_in_order[i] — ответ на тот же пример, что first[i].
+    second_in_order = [second_by_id[result.id] for result in first]
+    differences = {}
+    for name, statistic in task.metrics.items():
+        low, high = paired_bootstrap_ci(first, second_in_order, statistic)
+        differences[name] = Difference(statistic(first), statistic(second_in_order), low, high)
+    return differences
 
 
 def is_retryable(error: str | None) -> bool:
@@ -224,3 +266,16 @@ def write_results(results: list[ItemResult], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = "".join(json.dumps(asdict(result), ensure_ascii=False) + "\n" for result in results)
     path.write_text(text, encoding="utf-8")
+
+
+def read_results(path: Path) -> list[ItemResult]:
+    """Ответы из JSONL, который записал write_results."""
+    results = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        data = json.loads(line)
+        # В файлах, записанных до появления извлечения, поля checks ещё нет.
+        data.setdefault("checks", {})
+        results.append(ItemResult(**data))
+    return results

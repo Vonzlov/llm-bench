@@ -7,6 +7,7 @@ import pytest
 
 from bench_core.extraction import (
     MAX_SLOTS,
+    TASK,
     normalize,
     parse_json,
     render,
@@ -14,11 +15,10 @@ from bench_core.extraction import (
     score,
     slot_f1,
     slots_from,
-    summarize,
     system_prompt,
     user_message,
 )
-from bench_core.quality import ItemResult
+from bench_core.quality import ItemResult, summarize
 
 LABELS = ["date", "place_name", "time"]
 EXPECTED = [{"type": "time", "value": "пять утра"}, {"type": "date", "value": "этой неделе"}]
@@ -115,7 +115,7 @@ def test_micro_f1_sums_slots_over_all_examples() -> None:
     results = [result(EXPECTED, all_right), result(EXPECTED, "не знаю")]
 
     assert slot_f1(results) == pytest.approx(2 / 3)
-    metrics = summarize(results)
+    metrics = summarize(TASK, results)
     assert metrics["valid_json"].value == 0.5
     assert metrics["schema_ok"].value == 0.5
     assert metrics["slot_f1"].value == pytest.approx(2 / 3)

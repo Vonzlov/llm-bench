@@ -3,16 +3,16 @@
 import pytest
 
 from bench_core.classification import (
+    TASK,
     accuracy,
     macro_f1,
     out_of_list,
     parse,
     render,
-    summarize,
     system_prompt,
     user_message,
 )
-from bench_core.quality import ItemResult
+from bench_core.quality import ItemResult, summarize
 
 LABELS = ["alarm_set", "iot_hue_lighton", "weather_query"]
 
@@ -79,7 +79,7 @@ def test_failed_request_is_wrong_but_not_out_of_list() -> None:
 def test_summary_gives_value_and_interval_for_each_metric() -> None:
     results = [result("a", "a")] * 30 + [result("a", "b")] * 10
 
-    summary = summarize(results)
+    summary = summarize(TASK, results)
 
     assert set(summary) == {"accuracy", "macro_f1", "out_of_list"}
     assert summary["accuracy"].value == 0.75

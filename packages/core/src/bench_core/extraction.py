@@ -31,7 +31,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
-from bench_core.quality import ItemResult, Metric, Scored, Task, metric
+from bench_core.quality import ItemResult, Scored, Task
 
 SYSTEM_PROMPT = (
     "Найди в тексте сущности перечисленных типов. Включай в ответ только сущности, которые "
@@ -165,14 +165,6 @@ def slot_f1(results: Sequence[ItemResult]) -> float:
     return f1(found, extra, missed)
 
 
-def summarize(results: list[ItemResult]) -> dict[str, Metric]:
-    return {
-        "valid_json": metric(results, valid_json),
-        "schema_ok": metric(results, schema_ok),
-        "slot_f1": metric(results, slot_f1),
-    }
-
-
 TASK = Task(
     name="extraction",
     max_tokens=128,
@@ -180,6 +172,6 @@ TASK = Task(
     user_message=user_message,
     render=render,
     score=score,
-    summarize=summarize,
+    metrics={"valid_json": valid_json, "schema_ok": schema_ok, "slot_f1": slot_f1},
     schema=schema,
 )

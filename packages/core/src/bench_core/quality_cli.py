@@ -29,7 +29,15 @@ import httpx
 
 from bench_core import classification, extraction
 from bench_core.client import CHAT_PATH
-from bench_core.quality import ItemResult, Metric, Task, load_dataset, run_task, write_results
+from bench_core.quality import (
+    ItemResult,
+    Metric,
+    Task,
+    load_dataset,
+    run_task,
+    summarize,
+    write_results,
+)
 from bench_core.stats import SEED, percentile
 
 TASKS = {"classification": classification.TASK, "extraction": extraction.TASK}
@@ -180,7 +188,7 @@ def main(argv: list[str] | None = None) -> None:
     started = time.perf_counter()
     results = asyncio.run(run(args, task, items, labels, examples, max_tokens))
     elapsed_s = time.perf_counter() - started
-    metrics = task.summarize(results)
+    metrics = summarize(task, results)
     errors = Counter(result.error for result in results if result.error is not None)
     # Ответы, которые модель не закончила сама, а оборвал лимит токенов.
     truncated = sum(1 for result in results if result.finish_reason == "length")
