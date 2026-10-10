@@ -36,6 +36,8 @@ MASSIVE_ROWS = [
     ),
     massive_row("3", "test", "general_joke", "расскажи анекдот"),
     massive_row("4", "train", "cooking_recipe", "как испечь [food_type : блины]"),
+    massive_row("5", "train", "general_joke", "пошути"),
+    massive_row("6", "train", "weather_query", "погода [date : сегодня] в [place_name : москве]"),
 ]
 
 
@@ -55,7 +57,7 @@ XQUAD_DOC = {
             "title": "Первая статья",
             # В настоящем XQuAD у семи абзацев в начале стоит BOM.
             "paragraphs": [
-                paragraph("﻿Первый абзац.", "q1", "Первый"),
+                paragraph("\ufeffПервый абзац.", "q1", "Первый"),
                 paragraph("Второй абзац.", "q2", "Второй"),
             ],
         },
@@ -113,8 +115,24 @@ def test_ids_are_selected_once_and_then_read_from_file(tmp_path: Path) -> None:
         datasets.ids_for(path, candidates, 2)
 
 
+def test_examples_come_from_train_with_zero_one_and_two_slots() -> None:
+    assert datasets.select_examples(MASSIVE_ROWS) == ["5", "4", "6"]
+
+
+def test_example_ids_are_pinned_in_a_file(tmp_path: Path) -> None:
+    path = tmp_path / "examples.ids"
+
+    assert datasets.example_ids_for(path, MASSIVE_ROWS) == ["5", "4", "6"]
+    assert path.read_text().split() == ["5", "4", "6"]
+
+    # Пример из test недопустим: он попал бы и в промпт, и в оценку.
+    path.write_text("1\n")
+    with pytest.raises(ValueError, match="train"):
+        datasets.example_ids_for(path, MASSIVE_ROWS)
+
+
 def test_massive_gives_two_datasets_on_the_same_phrases() -> None:
-    intent, slots = datasets.massive_datasets(MASSIVE_ROWS, ["2", "3"])
+    intent, slots = datasets.massive_datasets(MASSIVE_ROWS, ["2", "3"], ["5", "4", "6"])
 
     assert [item["id"] for item in intent.items] == ["massive-ru-2", "massive-ru-3"]
     assert [item["input"] for item in slots.items] == [item["input"] for item in intent.items]
@@ -123,6 +141,18 @@ def test_massive_gives_two_datasets_on_the_same_phrases() -> None:
     # Варианты ответа — по всему файлу, а не по выборке и не только по test.
     assert intent.labels == ["alarm_set", "cooking_recipe", "general_joke", "weather_query"]
     assert slots.labels == ["date", "food_type", "place_name", "time"]
+    # Примеры — те же три фразы в двух видах.
+    assert [example["id"] for example in intent.examples] == [
+        "massive-ru-5",
+        "massive-ru-4",
+        "massive-ru-6",
+    ]
+    assert intent.examples[0]["expected"] == "general_joke"
+    assert slots.examples[0]["expected"] == []
+    assert slots.examples[2]["expected"] == [
+        {"type": "date", "value": "сегодня"},
+        {"type": "place_name", "value": "москве"},
+    ]
 
 
 def test_xquad_questions_drop_bom_and_keep_answers() -> None:
@@ -206,6 +236,9 @@ def test_cli_builds_all_datasets_from_downloaded_files(
     assert first["massive-ru-intent"]["n_items"] == 2
     assert first["xquad-ru-load"]["n_items"] == 3
     assert len((tmp_path / "ids" / "massive-ru.ids").read_text().split()) == 2
+    assert (tmp_path / "ids" / "massive-ru-examples.ids").read_text().split() == ["5", "4", "6"]
+    assert len(first["massive-ru-slots"]["examples"]) == 3
+    assert "examples" not in first["xquad-ru-qa"]
     # Второй запуск берёт id из файлов и собирает те же наборы байт в байт.
     assert first == second
     assert "massive-ru-slots" in capsys.readouterr().out

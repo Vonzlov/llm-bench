@@ -4,10 +4,12 @@
     uv run bench-quality --dataset data/massive-ru-intent.jsonl --model llama3.2:3b --limit 50
     uv run bench-quality --dataset data/massive-ru-slots.jsonl --constrained
 
-Умеет классификацию и извлечение в JSON; ответы по тексту появятся следующими. Ответ на
-каждый пример пишется в data/results/<набор>--<модель>.jsonl, итог прогона — рядом, в
-<набор>--<модель>.summary.json. У прогона с --constrained к имени добавляется --schema.
-Ключ API, если он нужен, берётся из переменной окружения BENCH_API_KEY.
+Умеет классификацию и извлечение в JSON; ответы по тексту появятся следующими. Перед
+вопросом модель видит три примера с ответами из manifest.json (few-shot); --shots 0
+спрашивает без примеров. Ответ на каждый пример пишется в
+data/results/<набор>--<модель>.jsonl, итог прогона — рядом, в .summary.json. У прогона
+с --constrained к имени добавляется --schema, а при числе примеров не по умолчанию —
+например, --0shot. Ключ API, если он нужен, берётся из переменной окружения BENCH_API_KEY.
 """
 
 import argparse
@@ -31,6 +33,8 @@ from bench_core.quality import ItemResult, Metric, Task, load_dataset, run_task,
 from bench_core.stats import SEED, percentile
 
 TASKS = {"classification": classification.TASK, "extraction": extraction.TASK}
+# Сколько примеров с ответами показываем перед вопросом по умолчанию.
+DEFAULT_SHOTS = 3
 TITLES = {
     "accuracy": "точность",
     "macro_f1": "macro-F1",
@@ -65,9 +69,17 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="ограниченная генерация: движок получает JSON-схему ответа",
     )
+    parser.add_argument(
+        "--shots",
+        type=int,
+        default=DEFAULT_SHOTS,
+        help="сколько примеров с ответами показать перед вопросом; 0 — без примеров",
+    )
     args = parser.parse_args(argv)
     if args.concurrency < 1 or (args.limit is not None and args.limit < 1):
         parser.error("--concurrency и --limit — целые числа от 1")
+    if args.shots < 0:
+        parser.error("--shots не может быть меньше нуля")
     return args
 
 
@@ -86,6 +98,7 @@ async def run(
     task: Task,
     items: list[dict[str, Any]],
     labels: list[str],
+    examples: list[dict[str, Any]],
     max_tokens: int,
 ) -> list[ItemResult]:
     headers = {}
@@ -113,6 +126,7 @@ async def run(
             labels=labels,
             concurrency=args.concurrency,
             max_tokens=max_tokens,
+            examples=examples,
             constrained=args.constrained,
             on_done=progress,
         )
@@ -133,12 +147,26 @@ def main(argv: list[str] | None = None) -> None:
         print(f"ошибка: у задачи {task.name} нет режима с JSON-схемой", file=sys.stderr)
         sys.exit(1)
 
+    # Меньше примеров, чем просили, — ошибка, а не тихий прогон с теми, что есть: иначе набор,
+    # собранный до появления примеров, незаметно подменит прогон с примерами прогоном без них.
+    available = entry.get("examples", [])
+    if args.shots > len(available):
+        print(
+            f"ошибка: в наборе {args.dataset.stem} примеров с ответами {len(available)},"
+            f" а просили {args.shots}: пересоберите наборы через make datasets"
+            " или уменьшите --shots",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if args.limit:
         items = items[: args.limit]
     labels = entry.get("labels", [])
+    examples = available[: args.shots]
     max_tokens = args.max_tokens or task.max_tokens
     mode = "--schema" if args.constrained else ""
-    name = f"{args.dataset.stem}--{slug(args.model)}{mode}.jsonl"
+    shots = f"--{args.shots}shot" if args.shots != DEFAULT_SHOTS else ""
+    name = f"{args.dataset.stem}--{slug(args.model)}{mode}{shots}.jsonl"
     out = args.out or Path("data/results") / name
     url = f"{args.base_url.rstrip('/')}{CHAT_PATH}"
     print(f"POST {url}, модель {args.model}")
@@ -146,11 +174,11 @@ def main(argv: list[str] | None = None) -> None:
     generation = "по JSON-схеме" if args.constrained else "свободная"
     print(
         f"одновременных запросов {args.concurrency}, температура 0, ответ до {max_tokens} токенов,"
-        f" генерация {generation}"
+        f" генерация {generation}, примеров с ответами в промпте {len(examples)}"
     )
 
     started = time.perf_counter()
-    results = asyncio.run(run(args, task, items, labels, max_tokens))
+    results = asyncio.run(run(args, task, items, labels, examples, max_tokens))
     elapsed_s = time.perf_counter() - started
     metrics = task.summarize(results)
     errors = Counter(result.error for result in results if result.error is not None)
@@ -180,6 +208,8 @@ def main(argv: list[str] | None = None) -> None:
         "concurrency": args.concurrency,
         "max_tokens": max_tokens,
         "constrained": args.constrained,
+        "shots": len(examples),
+        "example_ids": [example["id"] for example in examples],
         "temperature": 0,
         "seed": SEED,
         "metrics": {name: asdict(value) for name, value in metrics.items()},

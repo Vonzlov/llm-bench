@@ -117,6 +117,17 @@ async def test_constrained_mode_sends_json_schema() -> None:
     assert results[0].checks == {"valid_json": True, "schema_ok": True}
 
 
+def test_examples_go_before_the_question_as_past_dialog() -> None:
+    examples = [{"id": "e1", "input": "включи свет на кухне", "expected": "iot_hue_lighton"}]
+
+    messages = quality.build_messages(classification.TASK, ITEMS[0], LABELS, examples)
+
+    assert [message["role"] for message in messages] == ["system", "user", "assistant", "user"]
+    assert messages[1]["content"] == "Текст: включи свет на кухне\nКатегория:"
+    assert messages[2]["content"] == "iot_hue_lighton"
+    assert messages[3]["content"] == "Текст: разбуди меня в семь\nКатегория:"
+
+
 def test_constrained_mode_needs_a_schema() -> None:
     with pytest.raises(ValueError, match="JSON-схемой"):
         quality.response_format(classification.TASK, LABELS)

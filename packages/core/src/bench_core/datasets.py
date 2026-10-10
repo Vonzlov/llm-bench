@@ -18,6 +18,10 @@ XQuAD от DeepMind (CC BY-SA 4.0) — абзацы Википедии с воп
 
 Формат у всех наборов один — строка JSONL с полями id, input и expected. В нём же
 будут загружаться свои наборы.
+
+Для промпта с примерами (few-shot) у наборов MASSIVE есть три фразы из раздела train:
+без слотов, с одним и с двумя слотами. Их id лежат в datasets/massive-ru-examples.ids,
+а сами примеры — в manifest.json, рядом с вариантами ответа.
 """
 
 import hashlib
@@ -61,6 +65,8 @@ class Dataset:
     items: list[dict[str, Any]]
     # Из чего модель выбирает ответ: интенты для классификации, типы слотов для извлечения.
     labels: list[str] = field(default_factory=list)
+    # Примеры с ответами для промпта (few-shot) — в том же формате, что и items.
+    examples: list[dict[str, Any]] = field(default_factory=list)
 
 
 def check_sha256(data: bytes, expected: str, name: str) -> None:
@@ -135,8 +141,46 @@ def ids_for(path: Path, candidates: list[str], k: int) -> list[str]:
     return ids
 
 
-def massive_datasets(rows: list[dict[str, Any]], ids: list[str]) -> list[Dataset]:
-    """Классификация интента и извлечение слотов на одних и тех же фразах."""
+def select_examples(rows: list[dict[str, Any]], seed: int = SEED) -> list[str]:
+    """id трёх фраз из train для примеров в промпте: без слотов, с одним и с двумя слотами.
+
+    Так примеры показывают модели все случаи, в том числе пустой ответ. Интенты у них
+    разные, чтобы примеры не тянули ответы классификации к одному классу. Примеры берутся
+    из train, а оцениваем на test, поэтому в оценку они не попадают.
+    """
+    rng = random.Random(seed)
+    train = sorted((row for row in rows if row["partition"] == "train"), key=lambda r: r["id"])
+    chosen: list[str] = []
+    used_intents: set[str] = set()
+    for slot_count in (0, 1, 2):
+        candidates = [
+            row
+            for row in train
+            if len(SLOT.findall(row["annot_utt"])) == slot_count
+            and row["intent"] not in used_intents
+        ]
+        row = rng.choice(candidates)
+        chosen.append(row["id"])
+        used_intents.add(row["intent"])
+    return chosen
+
+
+def example_ids_for(path: Path, rows: list[dict[str, Any]]) -> list[str]:
+    """id примеров из файла в репозитории. Если файла ещё нет — выбирает и записывает."""
+    if not path.exists():
+        path.write_text("\n".join(select_examples(rows)) + "\n", encoding="utf-8")
+    ids = path.read_text(encoding="utf-8").split()
+    train_ids = {row["id"] for row in rows if row["partition"] == "train"}
+    missing = set(ids) - train_ids
+    if missing:
+        raise ValueError(f"{path}: в разделе train нет id {sorted(missing)}")
+    return ids
+
+
+def massive_items(
+    rows: list[dict[str, Any]], ids: list[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Одни и те же фразы в двух видах: с интентом и со слотами."""
     by_id = {row["id"]: row for row in rows}
     intents = []
     slots = []
@@ -146,19 +190,45 @@ def massive_datasets(rows: list[dict[str, Any]], ids: list[str]) -> list[Dataset
         intents.append({"id": item_id, "input": row["utt"], "expected": row["intent"]})
         expected_slots = parse_slots(row["annot_utt"], row["utt"])
         slots.append({"id": item_id, "input": row["utt"], "expected": expected_slots})
+    return intents, slots
+
+
+def massive_datasets(
+    rows: list[dict[str, Any]], ids: list[str], example_ids: list[str]
+) -> list[Dataset]:
+    """Классификация интента и извлечение слотов на одних и тех же фразах."""
+    intents, slots = massive_items(rows, ids)
+    intent_examples, slot_examples = massive_items(rows, example_ids)
     # Варианты ответа — по всему файлу, а не по выборке: модель выбирает из всех 60 интентов.
     all_intents = sorted({row["intent"] for row in rows})
     all_slot_types = sorted({kind for row in rows for kind, _ in SLOT.findall(row["annot_utt"])})
     source = "MASSIVE 1.1, ru-RU, test"
+    license_ = "CC BY 4.0"
     return [
-        Dataset("massive-ru-intent", "classification", source, "CC BY 4.0", intents, all_intents),
-        Dataset("massive-ru-slots", "extraction", source, "CC BY 4.0", slots, all_slot_types),
+        Dataset(
+            "massive-ru-intent",
+            "classification",
+            source,
+            license_,
+            intents,
+            all_intents,
+            intent_examples,
+        ),
+        Dataset(
+            "massive-ru-slots",
+            "extraction",
+            source,
+            license_,
+            slots,
+            all_slot_types,
+            slot_examples,
+        ),
     ]
 
 
 def clean(text: str) -> str:
     """В семи абзацах русского XQuAD есть невидимый символ BOM — убираем его."""
-    return text.replace("﻿", "")
+    return text.replace("\ufeff", "")
 
 
 def xquad_questions(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -202,6 +272,7 @@ def build(
     """Все четыре набора. id выборки берутся из ids_dir или выбираются при первом запуске."""
     test_ids = [row["id"] for row in massive_rows if row["partition"] == "test"]
     massive_ids = ids_for(ids_dir / "massive-ru.ids", test_ids, SAMPLE_SIZE)
+    example_ids = example_ids_for(ids_dir / "massive-ru-examples.ids", massive_rows)
 
     questions = xquad_questions(xquad_doc)
     qa_ids = ids_for(ids_dir / "xquad-ru-qa.ids", list(questions), SAMPLE_SIZE)
@@ -209,7 +280,7 @@ def build(
     qa = Dataset("xquad-ru-qa", "qa", source, "CC BY-SA 4.0", [questions[i] for i in qa_ids])
     load = Dataset("xquad-ru-load", "load", source, "CC BY-SA 4.0", xquad_load_prompts(xquad_doc))
 
-    return [*massive_datasets(massive_rows, massive_ids), qa, load]
+    return [*massive_datasets(massive_rows, massive_ids, example_ids), qa, load]
 
 
 def write_jsonl(dataset: Dataset, data_dir: Path) -> str:
@@ -231,4 +302,6 @@ def manifest_entry(dataset: Dataset, version_hash: str) -> dict[str, Any]:
     }
     if dataset.labels:
         entry["labels"] = dataset.labels
+    if dataset.examples:
+        entry["examples"] = dataset.examples
     return entry

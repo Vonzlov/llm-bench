@@ -76,14 +76,35 @@ class Task:
     name: str
     # Потолок длины ответа по умолчанию.
     max_tokens: int
-    # Пример и варианты ответа → сообщения для модели.
-    build_messages: Callable[[dict[str, Any], list[str]], list[dict[str, str]]]
+    # Варианты ответа → системный промпт с инструкцией.
+    system_prompt: Callable[[list[str]], str]
+    # Пример → сообщение пользователя с вопросом.
+    user_message: Callable[[dict[str, Any]], str]
+    # Эталонный ответ → текст, каким его должна написать модель. Нужен для примеров в промпте.
+    render: Callable[[Any], str]
     # Пример, текст ответа и варианты → оценка ответа.
     score: Callable[[dict[str, Any], str, list[str]], Scored]
     # Ответы на все примеры → метрики по названиям.
     summarize: Callable[[list[ItemResult]], dict[str, Metric]]
     # Варианты ответа → JSON-схема для ограниченной генерации; None — такого режима нет.
     schema: Callable[[list[str]], dict[str, Any]] | None = None
+
+
+def build_messages(
+    task: Task, item: dict[str, Any], labels: list[str], examples: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Диалог, который видит модель: инструкция, примеры с ответами и сам вопрос.
+
+    Примеры идут как прошлые реплики: вопрос пользователя и ответ ассистента ровно в том
+    формате, который нужен (few-shot). Так модель видит не только инструкцию, но и то,
+    как именно надо отвечать: где у значения границы, что пустой ответ тоже бывает.
+    """
+    messages = [{"role": "system", "content": task.system_prompt(labels)}]
+    for example in examples:
+        messages.append({"role": "user", "content": task.user_message(example)})
+        messages.append({"role": "assistant", "content": task.render(example["expected"])})
+    messages.append({"role": "user", "content": task.user_message(item)})
+    return messages
 
 
 def response_format(task: Task, labels: list[str]) -> dict[str, Any]:
@@ -141,12 +162,14 @@ async def run_task(
     labels: list[str],
     concurrency: int,
     max_tokens: int,
+    examples: list[dict[str, Any]] | None = None,
     constrained: bool = False,
     on_done: Callable[[int], None] | None = None,
 ) -> list[ItemResult]:
     """Прогоняет все примеры набора, не больше concurrency запросов одновременно.
 
-    Ответы возвращаются в порядке примеров. on_done получает число готовых — для прогресса.
+    examples — примеры с ответами для промпта, одинаковые для всех вопросов. Ответы
+    возвращаются в порядке примеров набора. on_done получает число готовых — для прогресса.
     """
     semaphore = asyncio.Semaphore(concurrency)
     extra_body = {"response_format": response_format(task, labels)} if constrained else {}
@@ -154,7 +177,7 @@ async def run_task(
 
     async def one(item: dict[str, Any]) -> ItemResult:
         nonlocal done
-        messages = task.build_messages(item, labels)
+        messages = build_messages(task, item, labels, examples or [])
         async with semaphore:
             answer = await ask(
                 client, model=model, messages=messages, max_tokens=max_tokens, extra_body=extra_body

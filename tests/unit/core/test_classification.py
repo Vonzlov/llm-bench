@@ -4,11 +4,13 @@ import pytest
 
 from bench_core.classification import (
     accuracy,
-    build_messages,
     macro_f1,
     out_of_list,
     parse,
+    render,
     summarize,
+    system_prompt,
+    user_message,
 )
 from bench_core.quality import ItemResult
 
@@ -46,11 +48,12 @@ def test_parse_rejects_answers_not_from_the_list(output: str) -> None:
 
 
 def test_prompt_lists_every_label_on_its_own_line() -> None:
-    system, user = build_messages({"input": "разбуди меня в семь"}, LABELS)
-
-    assert system["role"] == "system"
-    assert system["content"].endswith("alarm_set\niot_hue_lighton\nweather_query")
-    assert user == {"role": "user", "content": "Текст: разбуди меня в семь\nКатегория:"}
+    assert system_prompt(LABELS).endswith("alarm_set\niot_hue_lighton\nweather_query")
+    assert (
+        user_message({"input": "разбуди меня в семь"}) == "Текст: разбуди меня в семь\nКатегория:"
+    )
+    # Ответ в примерах — просто название категории, и разбор принимает его как есть.
+    assert parse(render("alarm_set"), LABELS) == "alarm_set"
 
 
 def test_metrics_match_hand_computed_example() -> None:

@@ -7,14 +7,16 @@ import pytest
 
 from bench_core.extraction import (
     MAX_SLOTS,
-    build_messages,
     normalize,
     parse_json,
+    render,
     schema,
     score,
     slot_f1,
     slots_from,
     summarize,
+    system_prompt,
+    user_message,
 )
 from bench_core.quality import ItemResult
 
@@ -131,9 +133,17 @@ def test_schema_allows_only_listed_types_and_bounds_the_answer() -> None:
 
 
 def test_prompt_lists_types_and_text() -> None:
-    system, user = build_messages({"input": "разбуди меня в пять утра"}, LABELS)
+    prompt = system_prompt(LABELS)
 
-    assert system["content"].endswith("Типы:\ndate\nplace_name\ntime")
-    assert '{"slots": []}' in system["content"]
-    assert "без предлогов" in system["content"]
-    assert user == {"role": "user", "content": "Текст: разбуди меня в пять утра"}
+    assert prompt.endswith("Типы:\ndate\nplace_name\ntime")
+    assert '{"slots": []}' in prompt
+    assert "без предлогов" in prompt
+    assert user_message({"input": "разбуди меня в пять утра"}) == "Текст: разбуди меня в пять утра"
+
+
+def test_answer_in_examples_is_exactly_what_we_parse() -> None:
+    """Пример в промпте показывает ровно тот формат, который разбор принимает за верный."""
+    text = render(EXPECTED)
+
+    assert parse_json(text) == (True, {"slots": EXPECTED})
+    assert score({"expected": EXPECTED}, text, LABELS).score == 1.0

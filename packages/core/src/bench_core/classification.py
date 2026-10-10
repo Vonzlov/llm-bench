@@ -24,11 +24,17 @@ SYSTEM_PROMPT = (
 EDGE_CHARS = " \t\r\n\"'`*«»."
 
 
-def build_messages(item: dict[str, Any], labels: list[str]) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT.format(labels="\n".join(labels))},
-        {"role": "user", "content": f"Текст: {item['input']}\nКатегория:"},
-    ]
+def system_prompt(labels: list[str]) -> str:
+    return SYSTEM_PROMPT.format(labels="\n".join(labels))
+
+
+def user_message(item: dict[str, Any]) -> str:
+    return f"Текст: {item['input']}\nКатегория:"
+
+
+def render(expected: Any) -> str:
+    """Ответ в примерах — просто название категории."""
+    return str(expected)
 
 
 def parse(output: str, labels: list[str]) -> str | None:
@@ -87,7 +93,9 @@ def summarize(results: list[ItemResult]) -> dict[str, Metric]:
 TASK = Task(
     name="classification",
     max_tokens=64,
-    build_messages=build_messages,
+    system_prompt=system_prompt,
+    user_message=user_message,
+    render=render,
     score=score,
     summarize=summarize,
 )
