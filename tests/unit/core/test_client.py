@@ -72,7 +72,14 @@ async def test_short_answer_finishes_with_stop(start_server: StartServer) -> Non
 
 
 async def test_waiting_in_queue_counts_as_ttft(start_server: StartServer) -> None:
-    """При одном слоте, как у Ollama с OLLAMA_NUM_PARALLEL=1, второй запрос ждёт первый."""
+    """При одном слоте, как у Ollama с OLLAMA_NUM_PARALLEL=1, второй запрос ждёт первый.
+
+    Точность TTFT проверяет test_measures_ttft_and_token_intervals, а этот тест — только
+    очередь. Поэтому границы разводят два случая, а не меряют точность: ждавший в очереди
+    получает первый токен не раньше чем через 0,24 с, а не ждавший — через 0,1 с плюс
+    накладные расходы. Клиент и сервер здесь работают в одном процессе и делят GIL, и на
+    WSL, когда два запроса уходят разом, накладные доходят до 40 мс.
+    """
     # Каждый запрос занимает слот на 100 мс до первого токена и ещё 4 токена по 10 мс.
     base_url = start_server(ttft_ms=100, tokens_per_second=100, output_tokens=5, max_concurrency=1)
     async with httpx.AsyncClient(base_url=f"{base_url}/v1", timeout=5.0) as client:
@@ -83,9 +90,12 @@ async def test_waiting_in_queue_counts_as_ttft(start_server: StartServer) -> Non
 
     ttfts = sorted(result.ttft_s for result in results if result.ttft_s is not None)
     assert len(ttfts) == 2
-    assert 0.1 <= ttfts[0] < 0.13
+    # Первый не ждал: быстрее 0,1 с ответить нельзя, а ждавший получил бы не меньше 0,24 с.
+    assert 0.1 <= ttfts[0] < 0.2
     # Второй ждал, пока первый освободит слот (0,14 с), и только потом получил свои 100 мс.
-    assert 0.24 <= ttfts[1] < 0.29
+    # Запас сверху вдвое больше, чем у первого: опоздание таймера сервера попало бы сюда
+    # дважды — в конец первого ответа и в свой первый токен.
+    assert 0.24 <= ttfts[1] < 0.45
 
 
 @pytest.mark.parametrize(
